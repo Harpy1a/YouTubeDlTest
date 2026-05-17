@@ -385,7 +385,14 @@ jobs:
               
               for i, x in enumerate(v, 1):
                   print(f'\n📥 [{i}/{len(v)}] {x["t"]}')
-                  print(f'   Channel: {x["c"]} | Duration: {x["dr"]//60}m | Views: {x["v"]}')
+                  print(f' Channel: {x["c"]} | Duration: {x["dr"]//60}m | Views: {x["v"]}')
+                  
+                  # added skip check (harpyia)
+                  existing_files = list(cd.glob(f'v*_{x["id"]}.*'))
+                  if existing_files:
+                      print(f' ⏭️ SKIPPED - Already exists: {existing_files[0].name}')
+                      ok.append(x['t'])
+                      continue
                   
                   result = dl_video(x['u'])
                   if result:
