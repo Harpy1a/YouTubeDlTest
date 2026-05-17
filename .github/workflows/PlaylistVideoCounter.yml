@@ -1,0 +1,199 @@
+name: Playlist Video Counter
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'Playlist URL'
+        required: true
+        type: string
+
+env:
+  PYTHONUNBUFFERED: '1'
+  DEBIAN_FRONTEND: 'noninteractive'
+
+jobs:
+  count-videos:
+    name: Count Playlist Videos
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}
+
+      - name: Setup
+        run: |
+          python3 -c "import requests" 2>/dev/null || pip3 install -q requests
+          command -v yt-dlp &>/dev/null || pip3 install -q yt-dlp
+
+      - name: Prepare
+        id: prep
+        run: |
+          U="${{ github.event.inputs.url }}"
+          echo "URL=$U" >> $GITHUB_OUTPUT
+
+      - name: Count Videos
+        id: count
+        env:
+          URL: ${{ steps.prep.outputs.URL }}
+        run: |
+          python3 << 'PYEOF'
+          import os, json, subprocess, sys, re
+          from datetime import datetime
+
+          U = os.environ['URL']
+
+          def get_playlist_info(url):
+              cmd = ['yt-dlp', '--flat-playlist', '--dump-json', '--no-warnings', '--no-check-certificate', url]
+              r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+              
+              videos = []
+              for line in r.stdout.strip().split('\n'):
+                  if line:
+                      try:
+                          d = json.loads(line)
+                          if d.get('id'):
+                              videos.append(d)
+                      except: continue
+              
+              return videos
+
+          def get_playlist_title(url):
+              try:
+                  cmd = ['yt-dlp', '--flat-playlist', '--dump-json', '--playlist-end', '1',
+                         '--no-warnings', '--no-check-certificate', url]
+                  r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                  if r.returncode == 0 and r.stdout.strip():
+                      d = json.loads(r.stdout.strip().split('\n')[0])
+                      title = d.get('playlist_title') or d.get('title') or 'Untitled Playlist'
+                      channel = d.get('channel') or d.get('uploader') or d.get('uploader_id') or 'Unknown'
+                      return title, channel
+              except: pass
+              return 'Untitled Playlist', 'Unknown'
+
+          def format_duration(seconds):
+              if not seconds: return '?'
+              seconds = int(seconds)
+              hours = seconds // 3600
+              minutes = (seconds % 3600) // 60
+              if hours > 0:
+                  return f'{hours}h {minutes}m'
+              return f'{minutes}m'
+
+          print(f'{"="*50}')
+          print(f'PLAYLIST VIDEO COUNTER')
+          print(f'{"="*50}')
+          print(f'URL: {U}')
+          print(f'Fetching playlist data...')
+
+          title, channel = get_playlist_title(U)
+          videos = get_playlist_info(U)
+          total = len(videos)
+          
+          total_duration = sum(int(v.get('duration', 0) or 0) for v in videos)
+          total_views = sum(int(v.get('view_count', 0) or 0) for v in videos)
+          
+          print(f'\n{"="*50}')
+          print(f'Playlist: {title}')
+          print(f'Channel: {channel}')
+          print(f'Total Videos: {total}')
+          print(f'Total Duration: {format_duration(total_duration)}')
+          print(f'Total Views: {total_views:,}')
+          print(f'{"="*50}')
+          
+          print(f'\nVideo List:')
+          print(f'{"="*50}')
+          for i, v in enumerate(videos, 1):
+              title_v = v.get('title', 'Untitled')[:80]
+              dur = format_duration(v.get('duration', 0))
+              views = int(v.get('view_count', 0) or 0)
+              vid = v.get('id', '?')
+              print(f'{i:3d}. [{vid}] {title_v}')
+              print(f'     Duration: {dur} | Views: {views:,}')
+          
+          ts = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+          report = f'playlist_report_{ts}.md'
+          
+          with open(report, 'w') as f:
+              f.write(f'# Playlist Report: {title}\n\n')
+              f.write(f'**Generated:** {datetime.now():%Y-%m-%d %H:%M}\n\n')
+              f.write(f'## Summary\n\n')
+              f.write(f'| Property | Value |\n')
+              f.write(f'|----------|-------|\n')
+              f.write(f'| **Playlist** | {title} |\n')
+              f.write(f'| **Channel** | {channel} |\n')
+              f.write(f'| **URL** | {U} |\n')
+              f.write(f'| **Total Videos** | {total} |\n')
+              f.write(f'| **Total Duration** | {format_duration(total_duration)} |\n')
+              f.write(f'| **Total Views** | {total_views:,} |\n\n')
+              f.write(f'## Video List\n\n')
+              f.write(f'| # | Video ID | Title | Duration | Views |\n')
+              f.write(f'|---|----------|-------|----------|-------|\n')
+              
+              for i, v in enumerate(videos, 1):
+                  title_v = v.get('title', 'Untitled')[:60]
+                  dur = format_duration(v.get('duration', 0))
+                  views = int(v.get('view_count', 0) or 0)
+                  vid = v.get('id', '?')
+                  f.write(f'| {i} | `{vid}` | {title_v} | {dur} | {views:,} |\n')
+          
+          print(f'\nReport saved: {report}')
+          Path('/tmp/meta.json').write_text(json.dumps({
+              'title': title, 'channel': channel, 'total': total,
+              'duration': total_duration, 'views': total_views
+          }))
+          PYEOF
+
+      - name: Push Report
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "PUSHING REPORT"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "bot@github.com"
+          
+          echo ""
+          echo "Adding report..."
+          git add playlist_report_*.md
+          
+          TOTAL=$(git diff --cached --name-only | wc -l)
+          echo " Found $TOTAL files"
+          
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "Nothing to push"
+            exit 0
+          fi
+          
+          git diff --cached --name-only | while read f; do
+            echo "  $f"
+          done
+          
+          echo ""
+          echo "Pushing..."
+          
+          git commit -m "Playlist report [skip ci]" --quiet
+          
+          for i in 1 2 3 4 5; do
+            echo -n "  Attempt $i/5..."
+            if git pull --rebase --quiet 2>/dev/null && git push --quiet 2>/dev/null; then
+              echo " DONE!"
+              exit 0
+            fi
+            echo " FAILED"
+            git rebase --abort 2>/dev/null
+            [ $i -lt 5 ] && sleep $((i*5))
+          done
+          
+          echo "Push failed"
+          exit 1
